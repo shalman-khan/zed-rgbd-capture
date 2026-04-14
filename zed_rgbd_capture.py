@@ -9,8 +9,10 @@ Topics subscribed:
   /zed/zed_node/depth/camera_info           (sensor_msgs/CameraInfo)
 
 Outputs on Save:
-  rgbd_<timestamp>_<16|32>bit.tiff          4-channel TIFF  (R, G, B, D)
-  rgbd_<timestamp>_<16|32>bit.npz           NumPy archive   (rgb + depth arrays)
+  rgb_<timestamp>.png                        RGB image       (PNG, uint8 H×W×3)
+  depth_<timestamp>_<16|32>bit.tiff         Depth image     (single-channel TIFF)
+  rgb_<timestamp>.npy                        RGB array       (uint8, H×W×3)
+  depth_<timestamp>_<16|32>bit.npy          Depth array     (uint16 mm or float32 m)
   rgb_camera_info_<timestamp>.txt           RGB intrinsics
   depth_camera_info_<timestamp>.txt         Depth intrinsics
 
@@ -504,46 +506,35 @@ class MainWindow(QMainWindow):
             depth = self._cap_depth.astype(np.float32)    # H×W    float32 metres
             finite_mask = np.isfinite(depth)
 
-            # ── build 4-channel array ──────────────────────────────────────
+            # ── build depth array ──────────────────────────────────────────
             if use_16:
-                depth_mm  = np.where(finite_mask, depth * 1000.0, 0.0)
-                depth_mm  = np.clip(depth_mm, 0, 65535).astype(np.uint16)
-                rgb_u16   = rgb.astype(np.uint16)
-                combined  = np.dstack([rgb_u16, depth_mm])    # H×W×4  uint16
-                depth_npz = depth_mm.copy()
+                depth_save = np.where(finite_mask, depth * 1000.0, 0.0)
+                depth_save = np.clip(depth_save, 0, 65535).astype(np.uint16)
                 depth_unit = "mm (uint16)"
             else:
-                depth_f   = np.where(finite_mask, depth, 0.0).astype(np.float32)
-                rgb_f     = rgb.astype(np.float32)
-                combined  = np.dstack([rgb_f, depth_f])        # H×W×4  float32
-                depth_npz = depth_f.copy()
+                depth_save = np.where(finite_mask, depth, 0.0).astype(np.float32)
                 depth_unit = "m (float32)"
 
-            # ── TIFF ──────────────────────────────────────────────────────
-            tiff_path = outdir / f"rgbd_{ts}_{tag}.tiff"
+            # ── PNG (RGB) ──────────────────────────────────────────────────
+            png_path = outdir / f"rgb_{ts}.png"
+            rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(str(png_path), rgb_bgr)
+
+            # ── TIFF (depth, single-channel) ──────────────────────────────
+            tiff_path = outdir / f"depth_{ts}_{tag}.tiff"
             tifffile.imwrite(
                 str(tiff_path),
-                combined,
-                metadata={"axes": "YXS",
-                          "channels": ["R", "G", "B", "D"],
-                          "depth_unit": depth_unit},
+                depth_save,
+                metadata={"depth_unit": depth_unit},
             )
 
-            # ── NPZ ───────────────────────────────────────────────────────
-            npz_path = outdir / f"rgbd_{ts}_{tag}.npz"
-            save_dict: dict = {
-                "rgb":        self._cap_rgb,     # always uint8
-                "depth":      depth_npz,
-                "depth_unit": np.bytes_(depth_unit),
-                "timestamp":  np.bytes_(ts),
-            }
-            if self.rgb_info_msg is not None:
-                save_dict["rgb_K"] = np.array(self.rgb_info_msg.k).reshape(3, 3)
-                save_dict["rgb_D"] = np.array(self.rgb_info_msg.d)
-            if self.depth_info_msg is not None:
-                save_dict["depth_K"] = np.array(self.depth_info_msg.k).reshape(3, 3)
-                save_dict["depth_D"] = np.array(self.depth_info_msg.d)
-            np.savez_compressed(str(npz_path), **save_dict)
+            # ── NPY (rgb) ─────────────────────────────────────────────────
+            rgb_npy_path = outdir / f"rgb_{ts}.npy"
+            np.save(str(rgb_npy_path), rgb)
+
+            # ── NPY (depth) ───────────────────────────────────────────────
+            depth_npy_path = outdir / f"depth_{ts}_{tag}.npy"
+            np.save(str(depth_npy_path), depth_save)
 
             # ── Intrinsics text ───────────────────────────────────────────
             saved_txt: list[str] = []
@@ -560,8 +551,10 @@ class MainWindow(QMainWindow):
 
             # ── success dialog ────────────────────────────────────────────
             file_list = (
+                f"  • {png_path.name}\n"
                 f"  • {tiff_path.name}\n"
-                f"  • {npz_path.name}"
+                f"  • {rgb_npy_path.name}\n"
+                f"  • {depth_npy_path.name}"
             )
             for t in saved_txt:
                 file_list += f"\n  • {t}"
